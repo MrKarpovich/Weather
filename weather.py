@@ -1,6 +1,5 @@
 import requests
 import datetime
-import time
 import sqlite3
 from aiogram import Bot, types
 from aiogram.dispatcher import Dispatcher
@@ -17,10 +16,24 @@ dp = Dispatcher(bot)
 # Создание или подключение к базе данных SQLite
 conn = sqlite3.connect('weather_bot.db')
 cur = conn.cursor()
+
+# Создание или обновление таблицы users
 cur.execute("""CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY,
                 user_id INTEGER UNIQUE,
                 city TEXT)""")
+conn.commit()
+
+# Добавление новых столбцов, если они не существуют
+cur.execute("PRAGMA table_info(users)")
+columns = [column[1] for column in cur.fetchall()]
+
+if 'last_alert_time_lvl_2' not in columns:
+    cur.execute("ALTER TABLE users ADD COLUMN last_alert_time_lvl_2 TEXT")
+if 'last_alert_time_lvl_3' not in columns:
+    cur.execute("ALTER TABLE users ADD COLUMN last_alert_time_lvl_3 TEXT")
+if 'last_alert_time_lvl_4' not in columns:
+    cur.execute("ALTER TABLE users ADD COLUMN last_alert_time_lvl_4 TEXT")
 conn.commit()
 
 
@@ -67,13 +80,13 @@ def get_danger_level(temp, wind, pop, humidity):
         "lvl_1": "🟩 Опасности нет, консультативная информация.",
         "lvl_2": "🟨 Неблагоприятная погода, которая может нарушить планы на день.",
         "lvl_3": "🟧 Опасная погода, которая может нанести ущерб здоровью, привести к экономическим потерям и тратам.",
-        "lvl_4": "🟥 ВНИМАНИЕ!!! Экстремальная погода, которая обязательно нанесет ущерб здоровью и приведет к большим экономическим потерям! НЕМЕДЛЕННО предпринять меры: найти укрытие вдали от деревьев и летающих предметов!"
+        "lvl_4": "🟥 ВНИМАНИЕ!!! Экстремальная погода, которая обязательно нанесет ущерб здоровью!!! НЕМЕДЛЕННО предпринять меры: найти укрытие вдали от деревьев и летающих предметов!"
     }
-    if (pop > 0.5 and wind > 20) or temp < -40 or (temp > 40 and humidity > 40):
+    if (pop > 0 and wind > 20) or temp < -40 or (temp > 40 and humidity > 40):
         return danger_levels["lvl_4"]
-    elif (pop > 0.5 and wind > 15) or (temp > 33 and humidity > 50):
+    elif (pop > 0.2 and wind > 15) or (temp > 33 and humidity > 50):
         return danger_levels["lvl_3"]
-    elif (pop > 0 and wind > 9) or (temp > 25 and humidity > 30):
+    elif (pop > 0.4 and wind > 9) or (temp > 30 and humidity > 50):
         return danger_levels["lvl_2"]
     else:
         return danger_levels["lvl_1"]
@@ -90,7 +103,7 @@ def clean_database():
 
 
 def convert_wind_speed(speed):
-    return speed * 3.6  # Конвертация м/с в км/ч
+    return speed * 3.6  # Конвертация м/с -> км/ч
 
 
 def get_sun_times(sunrise, sunset):
@@ -106,18 +119,28 @@ def get_day_length(sunrise, sunset):
     return f"{hours}ч {minutes}мин"
 
 
+async def send_weather_warning(user_id, city, danger_level, weather_details):
+    await bot.send_message(user_id, f"⚠️ Обнаружена угроза погоды в {city}!\n"
+                                    f"Уровень угрозы: {danger_level}\n"
+                                    f"Температура: {weather_details['temp']}°C\n"
+                                    f"Влажность: {weather_details['humidity']}%\n"
+                                    f"Ветер: {weather_details['wind_speed']} м/с ({weather_details['wind_speed_km_h']:.2f} км/ч)\n"
+                                    f"Давление: {weather_details['pressure']} гПа\n"
+                                    f"Вероятность осадков: {weather_details['pop'] * 100}%\n"
+                                    f"Восход: {weather_details['sunrise_time']}\n"
+                                    f"Закат: {weather_details['sunset_time']}\n"
+                                    f"Продолжительность дня: {weather_details['day_length']}")
+
+
 async def check_weather():
     clean_database()  # Очистка базы данных перед проверкой погоды
 
-    cur.execute("SELECT user_id, city FROM users")
+    cur.execute("SELECT user_id, city, last_alert_time_lvl_2, last_alert_time_lvl_3, last_alert_time_lvl_4 FROM users")
     users = cur.fetchall()
 
-    for user_id, city in users:
+    for user_id, city, last_alert_time_lvl_2, last_alert_time_lvl_3, last_alert_time_lvl_4 in users:
         try:
             weather_data = get_weather_data(city)
-            forecast_data = get_forecast_data(city)
-
-            # Анализ текущей погоды
             cur_weather = weather_data["main"]["temp"]
             humidity = weather_data["main"]["humidity"]
             wind_speed_m_s = weather_data["wind"]["speed"]
@@ -130,93 +153,55 @@ async def check_weather():
             day_length = get_day_length(sunrise, sunset)
             danger_level = get_danger_level(cur_weather, wind_speed_m_s, pop, humidity)
 
-            if danger_level != "🟩 Опасности нет, консультативная информация.":
-                await bot.send_message(user_id, f"⚠️ Обнаружена угроза погоды в {city}!\n"
-                                                f"Уровень угрозы: {danger_level}\n"
-                                                f"Температура: {cur_weather}°C\n"
-                                                f"Влажность: {humidity}%\n"
-                                                f"Ветер: {wind_speed_m_s} м/с ({wind_speed_km_h:.2f} км/ч)\n"
-                                                f"Давление: {pressure} гПа\n"
-                                                f"Вероятность осадков: {pop * 100}%\n"
-                                                f"Восход: {sunrise_time}\n"
-                                                f"Закат: {sunset_time}\n"
-                                                f"Продолжительность дня: {day_length}")
+            weather_details = {
+                "temp": cur_weather,
+                "humidity": humidity,
+                "wind_speed": wind_speed_m_s,
+                "wind_speed_km_h": wind_speed_km_h,
+                "pressure": pressure,
+                "pop": pop,
+                "sunrise_time": sunrise_time,
+                "sunset_time": sunset_time,
+                "day_length": day_length
+            }
 
-            # Анализ погоды на завтра
-            tomorrow = datetime.date.today() + datetime.timedelta(days=1)
-            tomorrow_weather = None
-            for item in forecast_data['list']:
-                date = datetime.datetime.fromtimestamp(item['dt'])
-                if date.date() == tomorrow:
-                    tomorrow_weather = item
-                    break
-            if tomorrow_weather:
-                tomorrow_temp = tomorrow_weather['main']['temp']
-                tomorrow_humidity = tomorrow_weather['main']['humidity']
-                tomorrow_wind_speed_m_s = tomorrow_weather['wind']['speed']
-                tomorrow_wind_speed_km_h = convert_wind_speed(tomorrow_wind_speed_m_s)
-                tomorrow_pressure = tomorrow_weather['main']['pressure']
-                tomorrow_pop = tomorrow_weather.get('pop', 0)
-                tomorrow_danger_level = get_danger_level(tomorrow_temp, tomorrow_wind_speed_m_s, tomorrow_pop,
-                                                         tomorrow_humidity)
-                if tomorrow_danger_level != "🟩 Опасности нет, консультативная информация.":
-                    await bot.send_message(user_id, f"⚠️ Обнаружена угроза погоды в {city} на завтра!\n"
-                                                    f"Уровень угрозы: {tomorrow_danger_level}\n"
-                                                    f"Температура: {tomorrow_temp}°C\n"
-                                                    f"Влажность: {tomorrow_humidity}%\n"
-                                                    f"Ветер: {tomorrow_wind_speed_m_s} м/с ({tomorrow_wind_speed_km_h:.2f} км/ч)\n"
-                                                    f"Давление: {tomorrow_pressure} гПа\n"
-                                                    f"Вероятность осадков: {tomorrow_pop * 100}%")
+            current_time = datetime.datetime.now()
 
-            # Анализ погоды на послезавтра
-            after_tomorrow = datetime.date.today() + datetime.timedelta(days=2)
-            after_tomorrow_weather = None
-            for item in forecast_data['list']:
-                date = datetime.datetime.fromtimestamp(item['dt'])
-                if date.date() == after_tomorrow:
-                    after_tomorrow_weather = item
-                    break
-            if after_tomorrow_weather:
-                after_tomorrow_temp = after_tomorrow_weather['main']['temp']
-                after_tomorrow_humidity = after_tomorrow_weather['main']['humidity']
-                after_tomorrow_wind_speed_m_s = after_tomorrow_weather['wind']['speed']
-                after_tomorrow_wind_speed_km_h = convert_wind_speed(after_tomorrow_wind_speed_m_s)
-                after_tomorrow_pressure = after_tomorrow_weather['main']['pressure']
-                after_tomorrow_pop = after_tomorrow_weather.get('pop', 0)
-                after_tomorrow_danger_level = get_danger_level(after_tomorrow_temp, after_tomorrow_wind_speed_m_s,
-                                                               after_tomorrow_pop, after_tomorrow_humidity)
-                if after_tomorrow_danger_level != "🟩 Опасности нет, консультативная информация.":
-                    await bot.send_message(user_id, f"⚠️ Обнаружена угроза погоды в {city} на послезавтра!\n"
-                                                    f"Уровень угрозы: {after_tomorrow_danger_level}\n"
-                                                    f"Температура: {after_tomorrow_temp}°C\n"
-                                                    f"Влажность: {after_tomorrow_humidity}%\n"
-                                                    f"Ветер: {after_tomorrow_wind_speed_m_s} м/с ({after_tomorrow_wind_speed_km_h:.2f} км/ч)\n"
-                                                    f"Давление: {after_tomorrow_pressure} гПа\n"
-                                                    f"Вероятность осадков: {after_tomorrow_pop * 100}%")
+            if danger_level == "🟨 Неблагоприятная погода, которая может нарушить планы на день.":
+                if not last_alert_time_lvl_2 or (
+                        current_time - datetime.datetime.fromisoformat(last_alert_time_lvl_2)).total_seconds() > 43200:
+                    await send_weather_warning(user_id, city, danger_level, weather_details)
+                    cur.execute("UPDATE users SET last_alert_time_lvl_2 = ? WHERE user_id = ?",
+                                (current_time.isoformat(), user_id))
+                    conn.commit()
+
+            elif danger_level == "🟧 Опасная погода, которая может нанести ущерб здоровью, привести к экономическим потерям и тратам.":
+                if not last_alert_time_lvl_3 or (
+                        current_time - datetime.datetime.fromisoformat(last_alert_time_lvl_3)).total_seconds() > 14400:
+                    await send_weather_warning(user_id, city, danger_level, weather_details)
+                    cur.execute("UPDATE users SET last_alert_time_lvl_3 = ? WHERE user_id = ?",
+                                (current_time.isoformat(), user_id))
+                    conn.commit()
+
+            elif danger_level == "🟥 ВНИМАНИЕ!!! Экстремальная погода, которая обязательно нанесет ущерб здоровью и приведет к большим экономическим потерям! НЕМЕДЛЕННО предпринять меры: найти укрытие вдали от деревьев и летающих предметов!":
+                if not last_alert_time_lvl_4 or (
+                        current_time - datetime.datetime.fromisoformat(last_alert_time_lvl_4)).total_seconds() > 1800:
+                    await send_weather_warning(user_id, city, danger_level, weather_details)
+                    cur.execute("UPDATE users SET last_alert_time_lvl_4 = ? WHERE user_id = ?",
+                                (current_time.isoformat(), user_id))
+                    conn.commit()
 
         except BotBlocked:
-            # Пользователь заблокировал бота, удаляем из базы данных
             cur.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
             conn.commit()
         except Exception as e:
-            print(f"Не удалось проверить погоду для пользователя {user_id} в городе {city}: {e}")
+            print(f"Ошибка при проверке погоды для {city}: {e}")
 
 
-async def on_startup(_):
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(check_weather, "interval", seconds=10)
-    scheduler.start()
+# Настройка планировщика
+scheduler = AsyncIOScheduler()
+scheduler.add_job(check_weather, "interval", seconds=10)
+scheduler.start()
 
-
-async def on_shutdown(dp):
-    await bot.close()
-    await dp.storage.close()
-    conn.close()
-
-
-if __name__ == '__main__':
-    try:
-        executor.start_polling(dp, on_startup=on_startup, on_shutdown=on_shutdown)
-    except Exception as e:
-        print(f"Бот крашнул с ошибкой: {e}")
-        time.sleep(5)  # Подождать 5 секунд перед повторным запуском
+if __name__ == "__main__":
+    executor.start_polling(dp, skip_updates=True)
