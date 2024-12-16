@@ -9,8 +9,8 @@ from aiogram.utils.exceptions import BotBlocked
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pytz
 
-tg_bot_token = "-"
-open_weather_token = "-"
+tg_bot_token = os.getenv("TG_BOT_TOKEN")
+open_weather_token = os.getenv("OPEN_WEATHER_TOKEN")
 
 DANGER_1 = "🟩 Опасности нет, консультативная информация."
 DANGER_2 = "🟨\n⚠️Я объявляю жёлтый уровень тревоги!"
