@@ -9,8 +9,15 @@ from aiogram.utils.exceptions import BotBlocked
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pytz
 
-tg_bot_token = "-"
-open_weather_token = "-"
+from dotenv import load_dotenv
+import os
+load_dotenv()  # Загружает переменные из файла .env
+tg_bot_token = os.getenv("TG_BOT_TOKEN")
+open_weather_token = os.getenv("OPEN_WEATHER_TOKEN")
+if not tg_bot_token or not open_weather_token:
+    print("Токены не найдены! Пожалуйста, установите переменные в файле .env.")
+    exit(1)
+
 
 DANGER_1 = "🟩 Опасности нет, консультативная информация."
 DANGER_2 = "🟨\n⚠️Я объявляю жёлтый уровень тревоги!"
@@ -87,7 +94,6 @@ condition_emojis = {
     '804': '☁ Облачность 85-100%',
 }
 
-
 bot = Bot(token=tg_bot_token, timeout=120)
 dp = Dispatcher(bot)
 
@@ -159,17 +165,6 @@ def validate_city(city):
         return False
 
 
-# Это глянуть погоду в текущую секунду, что не надо
-# def get_weather_data(city):
-#     try:
-#         response = requests.get(
-#             f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={open_weather_token}&units=metric"
-#         )
-#         return response.json()
-#     except Exception as e:
-#         raise Exception(f"Ошибка получения данных о погоде: {e}")
-
-
 def get_forecast_data(city):
     try:
         response = requests.get(
@@ -205,6 +200,8 @@ def get_danger_level(temp, wind, pop, humidity, weather_conditions):
         return danger_levels["lvl_3"]
     elif wind > 9 or (temp > 31 and humidity > 80) or hazardous_weather:
         return danger_levels["lvl_2"]
+    elif pop < -1:
+        return danger_levels["lvl_1"]
     else:
         return danger_levels["lvl_1"]
 
@@ -287,7 +284,6 @@ async def send_weather_warning(user_id, city, danger_level, weather_details, for
                                     f"Обратите внимание на погодные условия:\n{hazardous_conditions_text}")
 
 
-
 def get_weather_details_from_forecast(forecast_entry):
     temp = forecast_entry["main"]["temp"]
     humidity = forecast_entry["main"]["humidity"]
@@ -323,26 +319,34 @@ async def check_weather():
             for day, forecasts in forecast_by_day.items():
                 for forecast_time_str, forecast_entry in forecasts:
                     weather_details = get_weather_details_from_forecast(forecast_entry)
-                    danger_level = get_danger_level(weather_details["temp"], weather_details["wind_speed"], weather_details["pop"], weather_details["humidity"], weather_details["weather_conditions"])
+                    danger_level = get_danger_level(weather_details["temp"], weather_details["wind_speed"],
+                                                    weather_details["pop"], weather_details["humidity"],
+                                                    weather_details["weather_conditions"])
 
                     current_time = datetime.datetime.now()
 
                     if danger_level == DANGER_2:
-                        if not last_alert_time_lvl_2 or (current_time - datetime.datetime.fromisoformat(last_alert_time_lvl_2)).total_seconds() > 54000:
+                        if not last_alert_time_lvl_2 or (current_time - datetime.datetime.fromisoformat(
+                                last_alert_time_lvl_2)).total_seconds() > 54000:
                             await send_weather_warning(user_id, city, danger_level, weather_details, forecast_time_str)
-                            cur.execute("UPDATE users SET last_alert_time_lvl_2 = ? WHERE user_id = ?", (current_time.isoformat(), user_id))
+                            cur.execute("UPDATE users SET last_alert_time_lvl_2 = ? WHERE user_id = ?",
+                                        (current_time.isoformat(), user_id))
                             conn.commit()
 
                     elif danger_level == DANGER_3:
-                        if not last_alert_time_lvl_3 or (current_time - datetime.datetime.fromisoformat(last_alert_time_lvl_3)).total_seconds() > 28800:
+                        if not last_alert_time_lvl_3 or (current_time - datetime.datetime.fromisoformat(
+                                last_alert_time_lvl_3)).total_seconds() > 28800:
                             await send_weather_warning(user_id, city, danger_level, weather_details, forecast_time_str)
-                            cur.execute("UPDATE users SET last_alert_time_lvl_3 = ? WHERE user_id = ?", (current_time.isoformat(), user_id))
+                            cur.execute("UPDATE users SET last_alert_time_lvl_3 = ? WHERE user_id = ?",
+                                        (current_time.isoformat(), user_id))
                             conn.commit()
 
                     elif danger_level == DANGER_4:
-                        if not last_alert_time_lvl_4 or (current_time - datetime.datetime.fromisoformat(last_alert_time_lvl_4)).total_seconds() > 3600:
+                        if not last_alert_time_lvl_4 or (current_time - datetime.datetime.fromisoformat(
+                                last_alert_time_lvl_4)).total_seconds() > 3600:
                             await send_weather_warning(user_id, city, danger_level, weather_details, forecast_time_str)
-                            cur.execute("UPDATE users SET last_alert_time_lvl_4 = ? WHERE user_id = ?", (current_time.isoformat(), user_id))
+                            cur.execute("UPDATE users SET last_alert_time_lvl_4 = ? WHERE user_id = ?",
+                                        (current_time.isoformat(), user_id))
                             conn.commit()
 
         except BotBlocked:
