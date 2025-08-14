@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 import os
 
 load_dotenv()  # Загружает переменные из файла .env
+scheduler = None
 tg_bot_token = os.getenv("TG_BOT_TOKEN")
 open_weather_token = os.getenv("OPEN_WEATHER_TOKEN")
 if not tg_bot_token or not open_weather_token:
@@ -20,7 +21,7 @@ if not tg_bot_token or not open_weather_token:
     exit(1)
 
 DANGER_1 = "🟩 Опасности нет, консультативная информация."
-DANGER_2 = "🟨\n⚠️Я объявляю жёлтый уровень тревоги!"
+DANGER_2 = "🟨\n⚠️Обычный жёлтый уровень тревоги, консультативная информация."
 DANGER_3 = "🟧 🟧 ВНИМАНИЕ!!! 🟧 🟧 \n\n     " \
            "⚠️⚠️⚠️Опасная погода! ⚠️⚠️⚠️\n\n" \
            "Ожидается ОЧЕНЬ сильный ветер, который принесет значительный ущерб. ИЗБЕГАЙТЕ ДАВКИ!" \
@@ -131,8 +132,114 @@ conn.commit()
 @dp.message_handler(commands=["start"])
 async def start_command(message: types.Message):
     await message.reply(
-        "Привет! Напиши мне город, а я буду следить за погодой и предупреждать тебя о потенциальных угрозах.")
+        "🌤️ Привет! Я — погодный бот.\n\n"
+        "Напиши мне название своего города, и я:\n"
+        "🔔 Предупрежу об опасной погоде (сильный ветер и т.д.)\n"
+        "📅 Буду следить автоматически — без лишних команд\n\n")
 
+
+@dp.message_handler(commands=["help"])
+async def help_command(message: types.Message):
+    keyboard = types.InlineKeyboardMarkup()
+    developer_button = types.InlineKeyboardButton(
+        text="📩 Связаться с создателем",
+        url="https://t.me/JluceHok_u3_MuHcka"
+    )
+    keyboard.add(developer_button)
+
+    help_text = (
+        "🌤️ *Добро пожаловать в справку погодного бота!* 🌤️\n\n"
+
+        "Я — твой персональный *погодный наблюдатель*. Как только в твоём городе появляется угроза — "
+        "сильный ветер, гроза, снегопад или другая опасная погода — я *сразу* тебя предупрежу.\n\n"
+
+        "📌 *Как это работает?*\n"
+        "Как только ты напишешь мне название своего города, я:\n"
+        "✅ Запомню его\n"
+        "✅ Каждые 2 минуты проверяю прогноз\n"
+        "✅ Оповещаю *автоматически*, если появится угроза\n"
+        "✅ Отправлю подробности: ветер, осадки, уровень опасности и что делать\n\n"
+
+        "🔹 *Тебе не нужно ничего вводить — я всё делаю сам.*\n"
+        "Даже если ты отключишься, я буду следить за погодой и пришлю тревогу, если понадобится.\n\n"
+
+        "📌 *Команда /now*\n"
+        "Если хочешь посмотреть погоду *прямо сейчас* — используй команду `/now`.\n"
+        "Но помни: она *не обязательна*. Я и так уже слежу за погодой и пришлю уведомление при любой угрозе.\n\n"
+
+        "💡 *Совет:* Просто скажи мне город — и забудь о погоде. Я всё сделаю за тебя.\n\n"
+
+        "🛠️ Возникли вопросы или идеи?\n"
+        "Свяжись с моим создателем — он всегда рад помочь!"
+    )
+
+    await message.reply(help_text, reply_markup=keyboard, parse_mode="Markdown")
+
+@dp.message_handler(commands=["now"])
+async def now_weather_command(message: types.Message):
+    user_id = message.from_user.id
+
+    # Получаем город пользователя из базы
+    cur.execute("SELECT city FROM users WHERE user_id = ?", (user_id,))
+    result = cur.fetchone()
+
+    if not result or not result[0]:
+        await message.reply("Я не знаю твой город. Напиши мне название города, чтобы я мог следить за погодой.")
+        return
+
+    city = result[0]
+
+    try:
+        # Запрос к API текущей погоды
+        response = requests.get(
+            f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={open_weather_token}&units=metric"
+        )
+        data = response.json()
+
+        if data.get("cod") != 200:
+            await message.reply(f"Не удалось получить погоду для {city}. Проверьте название города.")
+            return
+
+        # Извлечение данных
+        temp = data["main"]["temp"]
+        humidity = data["main"]["humidity"]
+        pressure = data["main"]["pressure"]
+        wind_speed = data["wind"]["speed"]
+        wind_speed_km_h = convert_wind_speed(wind_speed)
+        sunrise, sunset = get_sun_times(data["sys"]["sunrise"], data["sys"]["sunset"])
+        day_length = get_day_length(data["sys"]["sunrise"], data["sys"]["sunset"])
+
+        weather_conditions = data["weather"]
+        condition_code = str(weather_conditions[0]["id"])
+        condition_text = condition_emojis.get(condition_code, "☁️ Неизвестно")
+
+        # Определяем уровень опасности
+        danger_level = get_danger_level(
+            temp=temp,
+            wind=wind_speed,
+            pop=0,
+            humidity=humidity,
+            weather_conditions=weather_conditions
+        )
+
+        # Формируем сообщение
+        alert_text = f"📌 Погода запрошена: {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
+        alert_text += f"📍 Город: **{city}**\n\n"
+        alert_text += f"{condition_text}\n"  # ⬅️ Здесь уже есть эмодзи, лишнего не добавляем!
+        alert_text += f"🌡️ Температура: **{temp}°C**\n"
+        alert_text += f"💧 Влажность: **{humidity}%**\n"
+        alert_text += f"🧭 Давление: **{pressure} гПа**\n"
+        alert_text += f"💨 Ветер: **{wind_speed} м/с** ({wind_speed_km_h:.1f} км/ч)\n"
+        alert_text += f"🌅 Восход: **{sunrise}**\n"
+        alert_text += f"🌇 Закат: **{sunset}**\n"
+        alert_text += f"⏱ Продолжительность дня: **{day_length}**\n\n"
+        alert_text += f"{danger_level}"
+
+        await message.reply(alert_text, parse_mode="Markdown")
+
+    except Exception as e:
+        print(f"Ошибка при выполнении /now для {city}: {e}")
+        await message.reply("Произошла ошибка при получении погоды. Попробуй позже.")
 
 @dp.message_handler()
 async def add_or_update_city(message: types.Message):
@@ -203,7 +310,7 @@ def get_danger_level(temp, wind, pop, humidity, weather_conditions):
     hazardous_weather = any(
         200 <= condition['id'] <= 232 or  # Гроза (Thunderstorm)
         condition['id'] in [310, 312, 313, 314] or  # Мелкий дождик (Drizzle)
-        502 <= condition['id'] <= 511 or  # Дождь (Rain)
+        503 <= condition['id'] <= 511 or  # Дождь (Rain)
         condition['id'] in [521, 522, 531] or
         602 <= condition['id'] <= 622 or  # Снег (Snow)
         701 <= condition['id'] <= 781  # Атмосферные условия (Mist, Fog, Smoke, Dust, Squall, Tornado)
@@ -327,6 +434,7 @@ async def check_weather():
 
     for user_id, city, last_alert_time_lvl_2, last_alert_time_lvl_3, last_alert_time_lvl_4 in users:
         try:
+            print(time.strftime("%H:%M:%S"), 'Проверка погоды')
             # weather_data = get_weather_data(city)
             forecast_data = get_forecast_data(city)
 
@@ -372,14 +480,18 @@ async def check_weather():
             print(f"Ошибка при проверке погоды для {city}: {error_check_weather}")
 
 
-# Настройка планировщика
-scheduler = AsyncIOScheduler()
-scheduler.add_job(check_weather, "interval", seconds=120)
-scheduler.start()
+async def on_startup(dp):
+    global scheduler
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(check_weather, "interval", seconds=120)
+    scheduler.start()
+    print(time.strftime("%H:%M:%S"), 'Планировщик запущен \n')
 
+# А ЗДЕСЬ ТОЧКА ЗАПУСКА:
 if __name__ == '__main__':
-    try:
-        executor.start_polling(dp, skip_updates=True)
-    except Exception as e:
-        print(f"Бот с ошибкой: {e}")
-        time.sleep(5)  # Подождать 5 секунд перед повторным запуском
+    while True:
+        try:
+            executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+        except Exception as e:
+            print(f"[CRASH] Бот упал с ошибкой: {e}")
+            time.sleep(5)
